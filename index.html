@@ -680,6 +680,7 @@ const State = {
   screenFlash: 0,
   screenFlashColor: '#ffffff',
   bossWarning: 0,
+  shockwaves: [],
 };
 
 // Splash scene state (must exist before resize() runs on load)
@@ -1027,6 +1028,37 @@ function drawFloatTexts() {
   ctx.globalAlpha = 1;
 }
 
+// ─── SHOCKWAVES ───────────────────────────────────────────────────────────────
+function spawnShockwave(x, y, color = '#00e5ff', speed = 800) {
+  State.shockwaves.push({ x, y, radius: 10, maxRadius: 1500, color, speed, life: 1.0 });
+}
+
+function updateShockwaves(dt) {
+  for (let i = State.shockwaves.length - 1; i >= 0; i--) {
+    const sw = State.shockwaves[i];
+    sw.radius += sw.speed * dt;
+    sw.life -= dt * 1.5;
+    if (sw.life <= 0) State.shockwaves.splice(i, 1);
+  }
+}
+
+function drawShockwaves() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const sw of State.shockwaves) {
+    if (sw.life <= 0) continue;
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = sw.color;
+    ctx.lineWidth = 15 * sw.life;
+    ctx.globalAlpha = sw.life;
+    ctx.shadowColor = sw.color;
+    ctx.shadowBlur = 20;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 // ─── ASTEROIDS ────────────────────────────────────────────────────────────────
 const asteroids = [];
 
@@ -1110,6 +1142,8 @@ function updateParticles(dt) {
 }
 
 function drawParticles() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
   for (const p of particles) {
     const alpha = p.life / p.maxLife;
     ctx.globalAlpha = alpha;
@@ -1147,6 +1181,8 @@ function createPlayer() {
     shield: 0,
     nukeCooldown: 0,
     overdrive: 0,
+    speedTimer: 0,
+    spreadTimer: 0,
   };
 }
 
@@ -1170,7 +1206,9 @@ function updatePlayer(dt) {
   if (len > 0) { ax /= len; ay /= len; }
 
   player.isBoosting = Input.isDown('ShiftLeft') || Input.isDown('ShiftRight');
-  const spd = player.isBoosting ? CFG.PLAYER_BOOST : CFG.PLAYER_SPEED;
+  const baseSpd = player.speedTimer > 0 ? CFG.PLAYER_SPEED * 1.5 : CFG.PLAYER_SPEED;
+  const boostSpd = player.speedTimer > 0 ? CFG.PLAYER_BOOST * 1.5 : CFG.PLAYER_BOOST;
+  const spd = player.isBoosting ? boostSpd : baseSpd;
   const accel = 14;
   player.vx += (ax * spd - player.vx) * accel * dt;
   player.vy += (ay * spd - player.vy) * accel * dt;
@@ -1197,6 +1235,8 @@ function updatePlayer(dt) {
   player.shield = Math.max(0, player.shield - dt);
   player.nukeCooldown = Math.max(0, player.nukeCooldown - dt);
   player.overdrive = Math.max(0, player.overdrive - dt);
+  player.speedTimer = Math.max(0, player.speedTimer - dt);
+  player.spreadTimer = Math.max(0, player.spreadTimer - dt);
   State.comboTimer = Math.max(0, State.comboTimer - dt);
   if (State.comboTimer <= 0 && State.combo > 0) {
     State.combo = 0;
@@ -1287,6 +1327,9 @@ function spawnPowerup(x, y) {
   else if (roll < 0.08) type = 'weapon';
   else if (roll < 0.11) type = 'shield';
   else if (roll < 0.13) type = 'overdrive';
+  else if (roll < 0.15) type = 'speed';
+  else if (roll < 0.17) type = 'nuke';
+  else if (roll < 0.20) type = 'spread';
   else return;
 
   powerups.push({
@@ -1339,6 +1382,9 @@ function drawPowerups() {
       weapon: ['rgba(255,215,0,0.2)', '#ffd700', 'W'],
       shield: ['rgba(0,229,255,0.2)', '#00e5ff', 'S'],
       overdrive: ['rgba(255,64,129,0.2)', '#ff4081', 'O'],
+      speed: ['rgba(0,255,170,0.2)', '#00ffaa', '>>'],
+      nuke: ['rgba(255,51,51,0.2)', '#ff3333', 'N'],
+      spread: ['rgba(170,85,255,0.2)', '#aa55ff', 'M'],
     };
     const st = styles[p.type] || styles.weapon;
     ctx.fillStyle = st[0];
@@ -1370,6 +1416,7 @@ function fireBullet() {
   
   const spd = CFG.BULLET_SPEED * (player.overdrive > 0 ? 1.15 : 1);
   const homing = player.weaponLevel >= 5;
+  if (player.spreadTimer > 0) spread = [...spread, -0.3, 0.3, -0.6, 0.6];
   for (const off of spread) {
     bullets.push({
       x: player.x + Math.cos(angle) * 20,
@@ -1397,9 +1444,10 @@ function fireNuke() {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.type === 'boss') {
-      e.hp -= e.maxHp * 0.35;
+      const dmg = Math.ceil(e.maxHp * 0.35);
+      e.hp -= dmg;
       spawnExplosion(e.x, e.y, e.color, 40);
-      spawnFloatText(e.x, e.y - 30, 'BOSS HIT!', '#ff3350', 16);
+      spawnFloatText(e.x, e.y - 30, dmg + ' (NUKE!)', '#ff3350', 16);
       if (e.hp <= 0) destroyEnemy(i);
       continue;
     }
@@ -1409,6 +1457,7 @@ function fireNuke() {
   }
   enemyBullets.length = 0;
   spawnSparkle(player.x, player.y, '#ffd700', 30);
+  spawnShockwave(player.x, player.y, '#ff4081', 1200);
   updateHUD();
 }
 
@@ -1457,6 +1506,8 @@ function updateBullets(dt) {
 }
 
 function drawBullets() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
   for (const b of bullets) {
     if (b.trail) {
       b.trail.forEach((t, i) => {
@@ -1496,6 +1547,7 @@ function drawBullets() {
     ctx.fillStyle = 'rgba(255,100,150,0.4)';
     ctx.fill();
   }
+  ctx.restore();
 }
 
 // ─── ENEMIES ─────────────────────────────────────────────────────────────────
@@ -1518,6 +1570,18 @@ const ENEMY_TYPES = {
     size: 20, hp: 8, speed: 70, color: '#f44336', scoreVal: 80,
     xpVal: 100, fireRate: 1.5, behavior: 'strafe',
   },
+  charger: {
+    size: 15, hp: 3, speed: 200, color: '#ff6600', scoreVal: 30,
+    xpVal: 35, fireRate: 0, behavior: 'charge',
+  },
+  teleporter: {
+    size: 14, hp: 4, speed: 0, color: '#00ffff', scoreVal: 50,
+    xpVal: 60, fireRate: 2.0, behavior: 'teleport',
+  },
+  carrier: {
+    size: 30, hp: 15, speed: 35, color: '#9900ff', scoreVal: 100,
+    xpVal: 120, fireRate: 0, behavior: 'carrier',
+  },
   boss: {
     size: 45, hp: 150, speed: 30, color: '#ff003c', scoreVal: 1000,
     xpVal: 500, fireRate: 1.8, behavior: 'boss',
@@ -1531,8 +1595,11 @@ function spawnEnemy(isBoss = false) {
   const lvl = State.level;
   if (isBoss) typeName = 'boss';
   else if (lvl >= 8 && roll < 0.2) typeName = 'elite';
-  else if (lvl >= 5 && roll < 0.3) typeName = 'bomber';
-  else if (lvl >= 3 && roll < 0.5) typeName = 'fighter';
+  else if (lvl >= 7 && roll < 0.3) typeName = 'carrier';
+  else if (lvl >= 6 && roll < 0.4) typeName = 'teleporter';
+  else if (lvl >= 5 && roll < 0.5) typeName = 'bomber';
+  else if (lvl >= 4 && roll < 0.6) typeName = 'charger';
+  else if (lvl >= 3 && roll < 0.7) typeName = 'fighter';
   else typeName = 'scout';
 
   const t = ENEMY_TYPES[typeName];
@@ -1566,6 +1633,8 @@ function spawnEnemy(isBoss = false) {
     orbitAngle: Math.random() * Math.PI * 2,
     orbitSpeed: (Math.random() > 0.5 ? 1 : -1) * (0.8 + Math.random() * 0.6),
     orbitRadius: 120 + Math.random() * 80,
+    teleportTimer: 3,
+    spawnTimer: 4,
   });
 }
 
@@ -1603,6 +1672,35 @@ function updateEnemies(dt) {
       const targetY = H * 0.25 + Math.cos(performance.now() / 1500) * (H * 0.15);
       e.vx += ((targetX - e.x) * 0.8 - e.vx) * 1.5 * dt;
       e.vy += ((targetY - e.y) * 0.8 - e.vy) * 1.5 * dt;
+    } else if (e.behavior === 'charge') {
+      const chargeSpd = e.speed * (1 + Math.sin(performance.now() / 200) * 0.5);
+      e.vx += (ndx * chargeSpd - e.vx) * 2 * dt;
+      e.vy += (ndy * chargeSpd - e.vy) * 2 * dt;
+    } else if (e.behavior === 'teleport') {
+      e.teleportTimer -= dt;
+      if (e.teleportTimer <= 0) {
+        e.teleportTimer = 3 + Math.random() * 2;
+        spawnExplosion(e.x, e.y, e.color, 10);
+        e.x = player.x + (Math.random() - 0.5) * 300;
+        e.y = player.y + (Math.random() - 0.5) * 300;
+        spawnExplosion(e.x, e.y, e.color, 10);
+      }
+      e.vx *= 0.9;
+      e.vy *= 0.9;
+    } else if (e.behavior === 'carrier') {
+      e.vx += (ndx * e.speed - e.vx) * 1 * dt;
+      e.vy += (ndy * e.speed - e.vy) * 1 * dt;
+      e.spawnTimer -= dt;
+      if (e.spawnTimer <= 0) {
+        e.spawnTimer = 4;
+        const s = ENEMY_TYPES.scout;
+        enemies.push({
+          x: e.x, y: e.y, vx: (Math.random() - 0.5) * 100, vy: (Math.random() - 0.5) * 100,
+          angle: 0, type: 'scout', size: s.size, hp: s.hp, maxHp: s.hp,
+          speed: s.speed, color: s.color, scoreVal: s.scoreVal, xpVal: s.xpVal,
+          fireRate: 0, fireTimer: 0, behavior: 'chase',
+        });
+      }
     }
 
     e.x += e.vx * dt;
@@ -1808,7 +1906,7 @@ function checkCollisions() {
           destroyEnemy(ei, crit);
         } else {
           spawnExplosion(b.x, b.y, '#ffffff', 4);
-          if (crit) spawnFloatText(e.x, e.y, 'CRIT!', '#ff4081', 12);
+          spawnFloatText(e.x, e.y + (Math.random()*10 - 5), Math.ceil(b.damage * (crit ? 2 : 1)), crit ? '#ff4081' : '#ffffff', crit ? 14 : 10);
         }
         break;
       }
@@ -1894,8 +1992,17 @@ function checkCollisions() {
       } else if (p.type === 'overdrive') {
         player.overdrive = 6;
         playLevelUp();
+      } else if (p.type === 'speed') {
+        player.speedTimer = 8;
+        playLevelUp();
+      } else if (p.type === 'nuke') {
+        player.nukeCooldown = 0;
+        playLevelUp();
+      } else if (p.type === 'spread') {
+        player.spreadTimer = 10;
+        playLevelUp();
       }
-      const colors = { health: '#39ff9a', weapon: '#ffd700', shield: '#00e5ff', overdrive: '#ff4081' };
+      const colors = { health: '#39ff9a', weapon: '#ffd700', shield: '#00e5ff', overdrive: '#ff4081', speed: '#00ffaa', nuke: '#ff3333', spread: '#aa55ff' };
       spawnExplosion(p.x, p.y, colors[p.type] || '#fff', 10);
       powerups.splice(i, 1);
       updateHUD();
@@ -2074,6 +2181,7 @@ function startGame() {
   powerups.length = 0;
   asteroids.length = 0;
   floatTexts.length = 0;
+  State.shockwaves.length = 0;
   State.combo = 0;
   State.comboTimer = 0;
   State.maxCombo = 0;
@@ -2139,6 +2247,7 @@ function update(dt) {
   checkCollisions();
   updateParticles(dt);
   updateFloatTexts(dt);
+  updateShockwaves(dt);
   if (State.screenFlash > 0) {
     State.screenFlash *= 0.88;
     document.getElementById('screen-flash').style.opacity = String(State.screenFlash);
@@ -2183,6 +2292,7 @@ function render() {
     drawBullets();
     drawPlayer();
     drawFloatTexts();
+    drawShockwaves();
     drawRadar();
   }
 
